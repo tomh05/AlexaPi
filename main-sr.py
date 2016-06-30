@@ -12,6 +12,7 @@ import requests
 import json
 import re
 from memcache import Client
+import speech_recognition as sr
 
 #Settings
 button = 18 #GPIO Pin with button connected
@@ -54,6 +55,7 @@ def gettoken():
 		
 
 def alexa():
+	print "Alexa function"
 	GPIO.output(lights[0], GPIO.HIGH)
 	url = 'https://access-alexa-na.amazon.com/v1/avs/speechrecognizer/recognize'
 	headers = {'Authorization' : 'Bearer %s' % gettoken()}
@@ -83,7 +85,13 @@ def alexa():
 				('file', ('audio', inf, 'audio/L16; rate=16000; channels=1'))
 				]	
 		r = requests.post(url, headers=headers, files=files)
+
+	print "status code is"
+	print r.status_code
 	if r.status_code == 200:
+		print r.headers
+		with open("dump", "wb") as fh:
+			fh.write( r.content )
 		for v in r.headers['content-type'].split(";"):
 			if re.match('.*boundary.*', v):
 				boundary =  v.split("=")[1]
@@ -95,6 +103,7 @@ def alexa():
 			f.write(audio)
 		GPIO.output(lights[1], GPIO.LOW)
 
+		print 'playing response'
 		os.system('mpg123 -q {}1sec.mp3 {}response.mp3 {}1sec.mp3'.format(path, path, path))
 		GPIO.output(lights[0], GPIO.LOW)
 	else:
@@ -105,8 +114,6 @@ def alexa():
 			time.sleep(.2)
 			GPIO.output(lights[1], GPIO.LOW)
 		
-
-
 
 def start():
 	last = GPIO.input(button)
@@ -130,6 +137,30 @@ def start():
 		inp = None
 		alexa()
 
+def startRecog():
+	r = sr.Recognizer()
+	while True:
+		with sr.Microphone() as source:
+			print ("say something")
+			audio = r.listen(source)
+			print ("finished listening")
+		gotKeyphrase= False
+		# recognize speech using Sphinx
+		try:
+			gotKeyphrase = r.match_keyphrase_sphinx(audio, "manish","10e-10")
+		except sr.UnknownValueError:
+			print("Sphinx could not understand audio")
+		except sr.RequestError as e:
+			print("Sphinx error; {0}".format(e))
+		if gotKeyphrase:
+			print "Keyphrase found. Starting Alexa..."
+			rf = open(path+'recording.wav', 'w')
+			rf.write(audio.get_wav_data())
+			rf.close()
+			alexa()
+		else:
+			print "no keyphrase detected"
+		
 	
 
 if __name__ == "__main__":
@@ -142,10 +173,10 @@ if __name__ == "__main__":
 	while internet_on() == False:
 		print "."
 	token = gettoken()
-	os.system('mpg123 -q {}1sec.mp3 {}hello.mp3'.format(path, path))
+	#os.system('mpg123 -q {}1sec.mp3 {}hello.mp3'.format(path, path))
 	for x in range(0, 3):
 		time.sleep(.1)
 		GPIO.output(lights[0], GPIO.HIGH)
 		time.sleep(.1)
 		GPIO.output(lights[0], GPIO.LOW)
-	start()
+	startRecog()
