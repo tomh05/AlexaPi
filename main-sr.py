@@ -5,6 +5,7 @@ import random
 import time
 import RPi.GPIO as GPIO
 import alsaaudio
+import pyaudio
 import wave
 import random
 from creds import *
@@ -54,9 +55,24 @@ def gettoken():
 		return False
 		
 
+def playWav(path):
+	chunkSize = 1024
+	waveform = wave.open(path,'rb')
+	pyAudio = pyaudio.PyAudio()
+	stream = pyAudio.open(format = pyAudio.get_format_from_width(waveform.getsampwidth()),
+					channels = waveform.getnchannels(),
+					rate = waveform.getframerate(),
+					output = True)
+	data = waveform.readframes(chunkSize)
+	while data != '':
+		stream.write(data)
+		data = waveform.readframes(chunkSize)
+	stream.stop_stream()
+	stream.close()
+	pyAudio.terminate()
+
 def alexa():
 	print "Alexa function"
-	GPIO.output(lights[0], GPIO.HIGH)
 	url = 'https://access-alexa-na.amazon.com/v1/avs/speechrecognizer/recognize'
 	headers = {'Authorization' : 'Bearer %s' % gettoken()}
 	d = {
@@ -101,18 +117,20 @@ def alexa():
 				audio = d.split('\r\n\r\n')[1].rstrip('--')
 		with open(path+"response.mp3", 'wb') as f:
 			f.write(audio)
-		GPIO.output(lights[1], GPIO.LOW)
+		GPIO.output(lights[0], GPIO.HIGH)
 
 		print 'playing response'
-		os.system('mpg123 -q {}1sec.mp3 {}response.mp3 {}1sec.mp3'.format(path, path, path))
+		os.system('mpg123 -q {}response.mp3'.format(path))
 		GPIO.output(lights[0], GPIO.LOW)
 	else:
-		GPIO.output(lights[1], GPIO.LOW)
+		playWav(path+'error.wav')
 		for x in range(0, 3):
-			time.sleep(.2)
 			GPIO.output(lights[1], GPIO.HIGH)
+			GPIO.output(lights[0], GPIO.HIGH)
 			time.sleep(.2)
 			GPIO.output(lights[1], GPIO.LOW)
+			GPIO.output(lights[0], GPIO.LOW)
+			time.sleep(.2)
 		
 
 def start():
@@ -137,9 +155,14 @@ def start():
 		inp = None
 		alexa()
 
+
 def startRecog():
 	r = sr.Recognizer()
 	while True:
+		print 'Listening out for keyphrase'
+		gotKeyphrase = r.wait_for_keyphrase('alexa','10e+5')
+
+		'''
 		with sr.Microphone() as source:
 			print ("say something")
 			audio = r.listen(source)
@@ -147,13 +170,24 @@ def startRecog():
 		gotKeyphrase= False
 		# recognize speech using Sphinx
 		try:
-			gotKeyphrase = r.match_keyphrase_sphinx(audio, "manish","10e-10")
+			gotKeyphrase = r.match_keyphrase_sphinx(audio, "alexa","10e-10")
 		except sr.UnknownValueError:
 			print("Sphinx could not understand audio")
 		except sr.RequestError as e:
 			print("Sphinx error; {0}".format(e))
+
+		'''
 		if gotKeyphrase:
-			print "Keyphrase found. Starting Alexa..."
+			print "Keyphrase found. Start recording ..."
+			GPIO.output(lights[1], GPIO.HIGH)
+			print ("say something")
+			playWav(path+'bing1.wav')
+			with sr.Microphone() as source:
+				audio = r.listen(source)
+			playWav(path+'bing2.wav')
+			GPIO.output(lights[1], GPIO.LOW)
+			print ("finished listening")
+
 			rf = open(path+'recording.wav', 'w')
 			rf.write(audio.get_wav_data())
 			rf.close()
