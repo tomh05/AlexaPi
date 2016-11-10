@@ -3,20 +3,21 @@
 import os
 import random
 import time
-import RPi.GPIO as GPIO
 import alsaaudio
+import pyaudio
 import wave
 import random
 from creds import *
 import requests
 import json
 import re
+import rgbled
 from memcache import Client
+import speech_recognition as sr
 
 #Settings
-button = 18 #GPIO Pin with button connected
-lights = [24, 25] # GPIO Pins with LED's conneted
 device = "plughw:0" # Name of your microphone/soundcard in arecord -L
+led = rgbled.RgbLed(14,15,18,200)
 
 #Setup
 recorded = False
@@ -24,6 +25,26 @@ servers = ["127.0.0.1:11211"]
 mc = Client(servers, debug=1)
 path = os.path.realpath(__file__).rstrip(os.path.basename(__file__))
 
+colReady = '000811'
+colSuccess = '00ff33'
+colError = 'ff0000'
+colListening = 'ff00ff'
+colSpeaking = '0099ff'
+colThinking = '5500b3'
+
+lastEnergy = 0
+
+def energyCallback(energy):
+	global lastEnergy
+	energy /= 10.0
+	energy += 30
+	if energy < 0:
+		energy = 0
+	if energy > 100:
+		energy = 100
+	smoothedEnergy = max(energy,lastEnergy)
+	lastEnergy = energy
+	led.setRGB(smoothedEnergy,0,smoothedEnergy);
 
 
 def internet_on():
@@ -53,8 +74,25 @@ def gettoken():
 		return False
 		
 
+def playWav(path):
+	chunkSize = 1024
+	waveform = wave.open(path,'rb')
+	pyAudio = pyaudio.PyAudio()
+	stream = pyAudio.open(format = pyAudio.get_format_from_width(waveform.getsampwidth()),
+					channels = waveform.getnchannels(),
+					rate = waveform.getframerate(),
+					output = True)
+	data = waveform.readframes(chunkSize)
+	while data != '':
+		stream.write(data)
+		data = waveform.readframes(chunkSize)
+	stream.stop_stream()
+	stream.close()
+	pyAudio.terminate()
+
 def alexa():
-	GPIO.output(lights[0], GPIO.HIGH)
+	print "Alexa function"
+
 	url = 'https://access-alexa-na.amazon.com/v1/avs/speechrecognizer/recognize'
 	headers = {'Authorization' : 'Bearer %s' % gettoken()}
 	d = {
@@ -83,7 +121,13 @@ def alexa():
 				('file', ('audio', inf, 'audio/L16; rate=16000; channels=1'))
 				]	
 		r = requests.post(url, headers=headers, files=files)
+
+	print "status code is"
+	print r.status_code
 	if r.status_code == 200:
+		print r.headers
+		with open("dump", "wb") as fh:
+			fh.write( r.content )
 		for v in r.headers['content-type'].split(";"):
 			if re.match('.*boundary.*', v):
 				boundary =  v.split("=")[1]
@@ -91,61 +135,79 @@ def alexa():
 		for d in data:
 			if (len(d) >= 1024):
 				audio = d.split('\r\n\r\n')[1].rstrip('--')
-		with open(path+"response.mp3", 'wb') as f:
-			f.write(audio)
-		GPIO.output(lights[1], GPIO.LOW)
+		if audio:
+			with open(path+"response.mp3", 'wb') as f:
+				f.write(audio)
 
-		os.system('mpg123 -q {}1sec.mp3 {}response.mp3 {}1sec.mp3'.format(path, path, path))
-		GPIO.output(lights[0], GPIO.LOW)
+		led.setHex(colSpeaking)
+
+		print 'playing response'
+		#os.system('mpg123 -q {}response.mp3'.format(path))
+		os.system('mpg123 -q -w {}response.wav {}response.mp3'.format(path,path))
+		playWav(path+'response.wav')
+		led.setHex(colReady)
 	else:
-		GPIO.output(lights[1], GPIO.LOW)
+		playWav(path+'error.wav')
 		for x in range(0, 3):
+			led.setHex(colError)
 			time.sleep(.2)
-			GPIO.output(lights[1], GPIO.HIGH)
-			time.sleep(.2)
-			GPIO.output(lights[1], GPIO.LOW)
+			led.setHex(colReady)
+			time.sleep(.1)
 		
 
-
-
-def start():
-	last = GPIO.input(button)
+def startRecog():
+	r = sr.Recognizer()
 	while True:
-		val = GPIO.input(button)
-		GPIO.wait_for_edge(button, GPIO.FALLING) # we wait for the button to be pressed
-		GPIO.output(lights[1], GPIO.HIGH)
-		inp = alsaaudio.PCM(alsaaudio.PCM_CAPTURE, alsaaudio.PCM_NORMAL, device)
-		inp.setchannels(1)
-		inp.setrate(16000)
-		inp.setformat(alsaaudio.PCM_FORMAT_S16_LE)
-		inp.setperiodsize(500)
-		audio = ""
-		while(GPIO.input(button)==0): # we keep recording while the button is pressed
-			l, data = inp.read()
-			if l:
-				audio += data
-		rf = open(path+'recording.wav', 'w')
-		rf.write(audio)
-		rf.close()
-		inp = None
-		alexa()
+		print 'Listening out for keyphrase'
+		gotKeyphrase = r.wait_for_keyphrase('alexa','1e-50')
 
+		'''
+		with sr.Microphone() as source:
+			print ("say something")
+			audio = r.listen(source,energyCallback)
+			print ("finished listening")
+		gotKeyphrase= False
+		# recognize speech using Sphinx
+		try:
+			gotKeyphrase = r.match_keyphrase_sphinx(audio, "alexa","10e-10")
+		except sr.UnknownValueError:
+			print("Sphinx could not understand audio")
+		except sr.RequestError as e:
+			print("Sphinx error; {0}".format(e))
+
+		'''
+		if gotKeyphrase:
+			print "Keyphrase found. Start recording ..."
+
+			led.setHex(colListening)
+			print ("say something")
+			playWav(path+'bing1.wav')
+			with sr.Microphone() as source:
+				audio = r.listen(source,energyCallback)
+			playWav(path+'bing2.wav')
+			led.setHex(colThinking)
+			print ("finished listening")
+
+			rf = open(path+'recording.wav', 'w')
+			rf.write(audio.get_wav_data())
+			rf.close()
+			alexa()
+		else:
+			print "no keyphrase detected"
+		
 	
 
 if __name__ == "__main__":
-	GPIO.setwarnings(False)
-	GPIO.cleanup()
-	GPIO.setmode(GPIO.BCM)
-	GPIO.setup(button, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-	GPIO.setup(lights, GPIO.OUT)
-	GPIO.output(lights, GPIO.LOW)
+	led.setHex(colThinking)
+	
 	while internet_on() == False:
 		print "."
 	token = gettoken()
-	os.system('mpg123 -q {}1sec.mp3 {}hello.mp3'.format(path, path))
+	#os.system('mpg123 -q {}1sec.mp3 {}hello.mp3'.format(path, path))
 	for x in range(0, 3):
 		time.sleep(.1)
-		GPIO.output(lights[0], GPIO.HIGH)
+		led.setHex(colSuccess)
 		time.sleep(.1)
-		GPIO.output(lights[0], GPIO.LOW)
-	start()
+		led.setHex('000000')
+	led.setHex(colReady)
+	startRecog()
